@@ -34,7 +34,7 @@ const spotifyLink = (q) => {
 const DEFAULTS = {
   skin: null, scale: 1, vis: "bars", remaining: false, shuffle: false, repeat: false,
   balance: 0, eq: { on: false, preamp: 0, bands: Array(10).fill(0), preset: "Flat" }, custom: null,
-  eqOpen: false, plOpen: true, shade: false,
+  eqOpen: false, plOpen: true, shade: false, tab: "yt", spLink: "",
 };
 
 export default class Player extends View {
@@ -59,6 +59,11 @@ export default class Player extends View {
     this.skins = [];
     this.query = InputState.new({ placeholder: "Search YouTube, or paste a YouTube or Spotify link" });
     this.query.on("submit", (_e, cx) => this.submit(cx));
+    // The Spotify tab's link box; the last link loads again when the player opens.
+    this.spQuery = InputState.new({ placeholder: "Paste a Spotify song, album, playlist or artist link" });
+    this.spQuery.on("submit", (_e, cx) => this.loadSpotify(cx));
+    this.sp = null;
+    this.spBusy = false;
     this.dir = `${home()}/.config/herdr-app/mods/herdr-player`;
     this.ctl = `${this.dir}/mpvctl.py`;
     this.cache = `${home()}/Library/Caches/herdr-player`;
@@ -80,6 +85,10 @@ export default class Player extends View {
         if (c === "toggle" || c === "next") this.transport(c, cx);
       }
     });
+    if (this.set.spLink) {
+      this.spQuery.set_value(this.set.spLink);
+      this.loadSpotify(cx);
+    }
     cx.spawn(async (cx) => {
       await this.scanSkins();
       if (this.set.skin) await this.useSkin(this.set.skin, cx);
@@ -394,14 +403,65 @@ export default class Player extends View {
     this.act(cx, () => this.mpv(cmd));
   }
 
-  // A Spotify link's songs, read from Spotify's public embed page (no account): title, artists, length in ms.
-  async spotifyTracks({ kind, id }) {
+  // A Spotify link, read from Spotify's public embed page (no account): its name, who it's by, cover art (about
+  // 300 px) and songs (title, artists, length in ms).
+  async spotifyLoad({ kind, id }) {
     const r = await fetch(`https://open.spotify.com/embed/${kind}/${id}`, { headers: { "User-Agent": "Mozilla/5.0" } });
     const m = /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/.exec(await r.text());
     const e = m && JSON.parse(m[1]).props?.pageProps?.state?.data?.entity;
     if (!e) throw new Error("Spotify didn't share that link (is it private?)");
-    if (kind === "track") return [{ title: e.name ?? e.title, by: (e.artists ?? []).map((a) => a.name).join(", "), ms: e.duration }];
-    return (e.trackList ?? []).filter((t) => t.title && t.isPlayable !== false).map((t) => ({ title: t.title, by: t.subtitle ?? "", ms: t.duration }));
+    const artists = (e.artists ?? []).map((a) => a.name).join(", ");
+    const songs = kind === "track" ? [{ title: e.name ?? e.title, by: artists, ms: e.duration }]
+      : (e.trackList ?? []).filter((t) => t.title && t.isPlayable !== false).map((t) => ({ title: t.title, by: t.subtitle ?? "", ms: t.duration }));
+    const size = (i) => i.width ?? i.maxWidth ?? 300;
+    const imgs = e.coverArt?.sources ?? e.visualIdentity?.image ?? [];
+    const cover = [...imgs].filter((i) => size(i) <= 320).sort((a, b) => size(b) - size(a))[0] ?? imgs[0];
+    return { kind, id, name: e.title ?? e.name ?? "", by: kind === "track" ? artists : e.subtitle ?? "", cover: cover?.url, songs };
+  }
+
+  // The Spotify tab: a link's cover, name and songs, shown before anything plays.
+  loadSpotify(cx) {
+    const text = this.spQuery.value().trim(), link = spotifyLink(text);
+    if (!link) { this.message = "That isn't a Spotify song, album, playlist or artist link."; cx.notify(); return; }
+    if (this.spBusy) return;
+    this.spBusy = true;
+    this.message = "Reading the Spotify link…";
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const sp = await this.spotifyLoad(link);
+        // The cover, cached in a hidden folder (no mod reload); only https, and the file named by kind and id.
+        if (sp.cover?.startsWith("https://")) {
+          const name = `${sp.kind}-${sp.id}.jpg`;
+          const r = await exec("sh", ["-c", '[ -s "$2" ] || { mkdir -p "$(dirname "$2")" && curl -sfL -m 20 -o "$2" "$1"; }; [ -s "$2" ]',
+            "cover", sp.cover, `${this.dir}/.spotify/${name}`]).catch(() => ({ code: 1 }));
+          if (r.code === 0) sp.coverPath = `mods/herdr-player/.spotify/${name}`;
+        }
+        this.sp = sp;
+        this.message = sp.songs.length ? "" : "No playable songs in that link.";
+        this.save({ spLink: text });
+      } catch (e) {
+        this.message = String(e.message ?? e);
+      } finally {
+        this.spBusy = false;
+        cx.notify();
+      }
+    });
+  }
+
+  // Plays the loaded Spotify songs: all of them (i null), or one, found on YouTube.
+  playSpotify(i, how, cx) {
+    const songs = this.sp?.songs ?? [];
+    if (!songs.length) return;
+    const t = i == null ? null : songs[i];
+    this.message = t ? `Finding ${t.title} on YouTube…` : `Finding ${songs.length > 1 ? `${songs.length} songs` : "it"} on YouTube…`;
+    cx.notify();
+    this.act(cx, async () => {
+      if (!t) return this.playAll(songs, (x) => this.ytMatch(x), cx);
+      const m = await this.ytMatch(t);
+      if (!m) throw new Error(`Couldn't find ${t.title} on YouTube`);
+      await this.play(m, how);
+    });
   }
 
   // The same song on YouTube: the first of five results within 15 s of Spotify's length, else the first.
@@ -444,7 +504,7 @@ export default class Player extends View {
     cx.spawn(async (cx) => {
       try {
         if (sp) {
-          const tracks = await this.spotifyTracks(sp);
+          const tracks = (await this.spotifyLoad(sp)).songs;
           if (!tracks.length) throw new Error("No playable songs in that link");
           this.message = `Finding ${tracks.length > 1 ? `${tracks.length} songs` : "it"} on YouTube…`;
           cx.notify();

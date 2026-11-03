@@ -1,7 +1,7 @@
 // The playlist and equalizer panels, shared by both looks. `pal` colours them: the skin's playlist colours
 // (pledit.txt) or the built-in look's.
 
-import { div } from "gpui-kit";
+import { div, image } from "gpui-kit";
 import { v_flex, h_flex, Input } from "gpui-base";
 
 export const EQ_LABELS = ["60", "170", "310", "600", "1K", "3K", "6K", "12K", "14K", "16K"];
@@ -55,19 +55,53 @@ export function playlistPanel(p, pal, width) {
     .child(div().text_size(9).text_color(pal.dim).opacity(0.7).child(label))
     .child(v_flex().id(`${label}-list`).max_h(140).overflow_y_scroll().children(items.map((e, i) => row(e, i, queued))));
 
+  const sp = p.set.tab === "sp";
+  const box = (state, go, busy) => h_flex().h(22).px(4).gap(4).items_center().bg(pal.bg).border(1).border_color(pal.edge).on_mouse_down("left", stop)
+    .child(Input.new(state).flex_1().h_full().text_size(11).text_color(pal.text))
+    .child(chip(pal, sp ? "sp-go" : "go", busy ? "…" : "Go", go));
   return v_flex().id("pl").w(width).p(4).gap(4).bg(pal.face).border(1).border_color(pal.edge).font_family(pal.font)
     .child(h_flex().gap(4).items_center()
-      .child(div().flex_1().text_size(9).text_color(pal.dim).opacity(0.7).child("YOUTUBE · SPOTIFY LINKS · FILES"))
+      .child(chip(pal, "tab-yt", "YouTube", (cx) => p.save({ tab: "yt" }, cx), !sp))
+      .child(chip(pal, "tab-sp", "Spotify", (cx) => p.save({ tab: "sp" }, cx), sp))
+      .child(div().flex_1())
       .child(chip(pal, "pl-add", "+Dir", (cx) => p.addFolder(cx)))
       .child(chip(pal, "pl-save", "Save", (cx) => p.saveList(cx)))
       .child(chip(pal, "pl-clear", "Clear", (cx) => p.queueAct("clear", 0, 0, cx))))
-    .child(h_flex().h(22).px(4).gap(4).items_center().bg(pal.bg).border(1).border_color(pal.edge).on_mouse_down("left", stop)
-      .child(Input.new(p.query).flex_1().h_full().text_size(11).text_color(pal.text))
-      .child(chip(pal, "go", p.busy ? "…" : "Go", (cx) => p.submit(cx))))
+    .child(sp ? box(p.spQuery, (cx) => p.loadSpotify(cx), p.spBusy) : box(p.query, (cx) => p.submit(cx), p.busy))
     .when(Boolean(p.message), (el) => el.child(div().text_size(10).text_color(pal.dim).child(p.message)))
-    .when(p.results.length > 0, (el) => el.child(list("RESULTS · click plays, + queues", p.results, false)))
+    .when(!sp && p.results.length > 0, (el) => el.child(list("RESULTS · click plays, + queues", p.results, false)))
+    .when(sp, (el) => el.child(p.sp ? spotifyCard(p, pal) : div().text_size(10).text_color(pal.dim).opacity(0.8)
+      .child("Paste a Spotify song, album, playlist or artist link. No account needed: each song plays from YouTube.")))
     .child(p.queue.length ? list("PLAYLIST · drag to reorder", p.queue, true)
       : div().text_size(10).text_color(pal.dim).opacity(0.7).child("Empty. Search, paste a YouTube or Spotify link, or drop files here."));
+}
+
+// A loaded Spotify link: cover, name, who it's by, Play all, and its songs (a click plays one, + queues it).
+// The song playing now is lit.
+function spotifyCard(p, pal) {
+  const sp = p.sp, playing = p.state.origin === "sp" ? p.state.title : null;
+  const song = (t, i) => {
+    const on = playing === (t.by ? `${t.by} - ${t.title}` : t.title);
+    return h_flex().id(`sp-${i}`).h(20).px(4).gap(6).flex_none().items_center().text_size(11)
+      .text_color(on ? pal.current : pal.text).when(on, (el) => el.bg(pal.sel)).hover((s) => s.bg(pal.sel))
+      .on_mouse_down("left", stop).on_click((_ev, cx) => p.playSpotify(i, "replace", cx))
+      .child(div().w(20).flex_none().text_color(pal.dim).opacity(0.7).child(`${i + 1}.`))
+      .child(div().flex_1().min_w(0).truncate().child(t.title))
+      .when(sp.kind !== "album" && Boolean(t.by), (el) => el.child(div().max_w(90).truncate().opacity(0.7).child(t.by)))
+      .when(t.ms > 0, (el) => el.child(div().w(36).flex_none().opacity(0.7).child(mmss(t.ms / 1000))))
+      .child(div().id(`sp-add-${i}`).px(3).flex_none().opacity(0.7).hover((s) => s.opacity(1)).on_mouse_down("left", stop)
+        .on_click((_ev, cx) => { cx.stop_propagation(); p.playSpotify(i, "append-play", cx); }).child("+"));
+  };
+  return v_flex().gap(4)
+    .child(h_flex().gap(8).items_center()
+      .child(div().size(56).flex_none().rounded(3).overflow_hidden().bg(pal.bg)
+        .when(Boolean(sp.coverPath), (el) => el.child(image(sp.coverPath).size(56))))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(div().text_size(9).text_color(pal.dim).opacity(0.7).child(`SPOTIFY ${sp.kind.toUpperCase()}`))
+        .child(div().truncate().text_size(13).font_bold().text_color(pal.current).child(sp.name))
+        .child(div().truncate().text_size(10).text_color(pal.dim).child(`${sp.by ? `${sp.by} · ` : ""}${sp.songs.length} song${sp.songs.length === 1 ? "" : "s"}`)))
+      .child(chip(pal, "sp-all", "Play all", (cx) => p.playSpotify(null, "replace", cx), true)))
+    .child(v_flex().id("sp-list").max_h(140).overflow_y_scroll().children(sp.songs.map(song)));
 }
 
 // The built-in equalizer: on/off, presets, preamp and ten bands. Bands apply on release.

@@ -4,3 +4,4 @@ mods/herdr-player/skins/
 mods/herdr-player/*.d.ts
 mods/herdr-player/jsconfig.json
 .DS_Store
+mods/herdr-player/.spotify/
