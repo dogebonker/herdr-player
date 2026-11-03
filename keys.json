@@ -1,0 +1,7 @@
+{
+  "global": {
+    "cmd-shift-m": "mod.open:herdr-player",
+    "cmd-alt-p": "herdr-player.toggle",
+    "cmd-alt-n": "herdr-player.next"
+  }
+}

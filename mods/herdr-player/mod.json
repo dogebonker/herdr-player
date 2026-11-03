@@ -1,0 +1,2 @@
+{ "place": "none", "title": "herdr-player",
+  "overlay": { "kind": "window", "key": "herdr-player", "keep": true, "frame": "none" } }

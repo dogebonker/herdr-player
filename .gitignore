@@ -1,0 +1,6 @@
+mods/herdr-player/.skins/
+mods/herdr-player/.store/
+mods/herdr-player/skins/
+mods/herdr-player/*.d.ts
+mods/herdr-player/jsconfig.json
+.DS_Store
