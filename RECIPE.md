@@ -1,6 +1,6 @@
 # herdr-player
 
-A floating retro music window for Herdr. It plays YouTube, Spotify links (each song found on YouTube, no Spotify app or account) and local files through mpv, and can wear classic Winamp 2 `.wsz` skins picked from a built-in store.
+A floating retro music window for Herdr. It plays YouTube, Spotify and your own files, and wears classic Winamp 2 `.wsz` skins from a built-in store. Spotify links work with no account (each song is found on YouTube); connect Spotify Premium for search, your playlists and Spotify's own audio.
 
 ![herdr-player](preview.png)
 
