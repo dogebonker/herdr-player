@@ -70,8 +70,13 @@ export function playlistPanel(p, pal, width) {
     .child(sp ? box(p.spQuery, (cx) => p.loadSpotify(cx), p.spBusy) : box(p.query, (cx) => p.submit(cx), p.busy))
     .when(Boolean(p.message), (el) => el.child(div().text_size(10).text_color(pal.dim).child(p.message)))
     .when(!sp && p.results.length > 0, (el) => el.child(list("RESULTS · click plays, + queues", p.results, false)))
-    .when(sp, (el) => el.child(p.sp ? spotifyCard(p, pal) : div().text_size(10).text_color(pal.dim).opacity(0.8)
-      .child("Paste a Spotify song, album, playlist or artist link. No account needed: each song plays from YouTube.")))
+    .when(sp, (el) => el.child(spotifyAccount(p, pal)).child(
+      p.spView === "search" && p.spFound ? spotifyFound(p, pal)
+        : p.spView === "playlists" ? spotifyLists(p, pal, p.spLists, "YOUR PLAYLISTS")
+        : p.sp ? spotifyCard(p, pal)
+        : div().text_size(10).text_color(pal.dim).opacity(0.8)
+          .child(p.spot.premium === true ? "Search Spotify above, or open your playlists or liked songs."
+            : "Paste a Spotify song, album, playlist or artist link. No account needed: each song plays from YouTube.")))
     .child(p.queue.length ? list("PLAYLIST · drag to reorder", p.queue, true)
       : div().text_size(10).text_color(pal.dim).opacity(0.7).child("Empty. Search, paste a YouTube or Spotify link, or drop files here."));
 }
@@ -79,18 +84,19 @@ export function playlistPanel(p, pal, width) {
 // A loaded Spotify link: cover, name, who it's by, Play all, and its songs (a click plays one, + queues it).
 // The song playing now is lit.
 function spotifyCard(p, pal) {
-  const sp = p.sp, playing = p.state.origin === "sp" ? p.state.title : null;
+  const sp = p.sp, playing = p.state.origin === "sp" ? p.state.title : null, list = undefined;
   const song = (t, i) => {
     const on = playing === (t.by ? `${t.by} - ${t.title}` : t.title);
     return h_flex().id(`sp-${i}`).h(20).px(4).gap(6).flex_none().items_center().text_size(11)
       .text_color(on ? pal.current : pal.text).when(on, (el) => el.bg(pal.sel)).hover((s) => s.bg(pal.sel))
-      .on_mouse_down("left", stop).on_click((_ev, cx) => p.playSpotify(i, "replace", cx))
+      .on_mouse_down("left", stop).on_click((_ev, cx) => p.playSpotify(i, "replace", cx, list))
       .child(div().w(20).flex_none().text_color(pal.dim).opacity(0.7).child(`${i + 1}.`))
       .child(div().flex_1().min_w(0).truncate().child(t.title))
       .when(sp.kind !== "album" && Boolean(t.by), (el) => el.child(div().max_w(90).truncate().opacity(0.7).child(t.by)))
       .when(t.ms > 0, (el) => el.child(div().w(36).flex_none().opacity(0.7).child(mmss(t.ms / 1000))))
-      .child(div().id(`sp-add-${i}`).px(3).flex_none().opacity(0.7).hover((s) => s.opacity(1)).on_mouse_down("left", stop)
-        .on_click((_ev, cx) => { cx.stop_propagation(); p.playSpotify(i, "append-play", cx); }).child("+"));
+      // Queueing goes through YouTube; Spotify's own playback doesn't take a queue from here.
+      .when(!p.spot.premium, (el) => el.child(div().id(`sp-add-${i}`).px(3).flex_none().opacity(0.7).hover((s) => s.opacity(1)).on_mouse_down("left", stop)
+        .on_click((_ev, cx) => { cx.stop_propagation(); p.playSpotify(i, "append-play", cx, list); }).child("+")));
   };
   return v_flex().gap(4)
     .child(h_flex().gap(8).items_center()
@@ -102,6 +108,52 @@ function spotifyCard(p, pal) {
         .child(div().truncate().text_size(10).text_color(pal.dim).child(`${sp.by ? `${sp.by} · ` : ""}${sp.songs.length} song${sp.songs.length === 1 ? "" : "s"}`)))
       .child(chip(pal, "sp-all", "Play all", (cx) => p.playSpotify(null, "replace", cx), true)))
     .child(v_flex().id("sp-list").max_h(140).overflow_y_scroll().children(sp.songs.map(song)));
+}
+
+// The account line: connect, or how it's connected, with your playlists and liked songs once logged in.
+function spotifyAccount(p, pal) {
+  const s = p.spot;
+  const state = !s.installed || !s.loggedIn ? "Spotify Premium? Connect it."
+    : s.premium === null ? "Spotify · connecting…"
+    : s.premium ? "Spotify · Premium" : "Spotify didn't connect (Premium?)";
+  const ready = s.premium === true;
+  return h_flex().gap(4).items_center()
+    .child(div().flex_1().min_w(0).truncate().text_size(9).text_color(ready ? pal.current : pal.dim).opacity(ready ? 1 : 0.8).child(state))
+    .when(!s.loggedIn, (el) => el.child(chip(pal, "sp-connect", s.installed ? "Connect" : "Install", (cx) => p.connectSpotify(cx))))
+    .when(s.loggedIn && s.premium === false, (el) => el.child(chip(pal, "sp-retry", "Retry", (cx) => p.connectSpotify(cx))))
+    .when(ready, (el) => el
+      .child(chip(pal, "sp-playlists", "Playlists", (cx) => p.showSpotify("playlists", cx), p.spView === "playlists"))
+      .child(chip(pal, "sp-liked", "Liked", (cx) => p.showSpotify("liked", cx), p.sp?.kind === "liked" && p.spView === "card")));
+}
+
+// Albums, playlists or artists to open as cards.
+function spotifyLists(p, pal, lists, label) {
+  return v_flex().gap(1)
+    .child(div().text_size(9).text_color(pal.dim).opacity(0.7).child(label))
+    .child(v_flex().id(`${label}-list`).max_h(160).overflow_y_scroll().children(lists.map((l, i) =>
+      h_flex().id(`spl-${i}`).h(20).px(4).gap(6).flex_none().items_center().text_size(11).text_color(pal.text).hover((s) => s.bg(pal.sel))
+        .on_mouse_down("left", stop).on_click((_ev, cx) => p.openSpotify(l.kind, l.id, cx))
+        .child(div().w(46).flex_none().text_size(8).text_color(pal.dim).opacity(0.7).child(l.kind.toUpperCase()))
+        .child(div().flex_1().min_w(0).truncate().child(l.name))
+        .when(Boolean(l.by), (el) => el.child(div().max_w(100).truncate().opacity(0.7).child(l.by))))));
+}
+
+// Spotify search results: songs to play, then albums, playlists and artists to open.
+function spotifyFound(p, pal) {
+  const f = p.spFound, playing = p.state.origin === "sp" ? p.state.title : null;
+  return v_flex().gap(4)
+    .when(f.songs.length > 0, (el) => el.child(v_flex().gap(1)
+      .child(div().text_size(9).text_color(pal.dim).opacity(0.7).child("SONGS · click plays"))
+      .children(f.songs.map((t, i) => {
+        const on = playing === (t.by ? `${t.by} - ${t.title}` : t.title);
+        return h_flex().id(`spf-${i}`).h(20).px(4).gap(6).flex_none().items_center().text_size(11)
+          .text_color(on ? pal.current : pal.text).when(on, (el) => el.bg(pal.sel)).hover((s) => s.bg(pal.sel))
+          .on_mouse_down("left", stop).on_click((_ev, cx) => p.playSpotify(i, "replace", cx, f.songs))
+          .child(div().flex_1().min_w(0).truncate().child(t.title))
+          .child(div().max_w(100).truncate().opacity(0.7).child(t.by))
+          .when(t.ms > 0, (el) => el.child(div().w(36).flex_none().opacity(0.7).child(mmss(t.ms / 1000))));
+      }))))
+    .when(f.lists.length > 0, (el) => el.child(spotifyLists(p, pal, f.lists, "ALBUMS · PLAYLISTS · ARTISTS")));
 }
 
 // The built-in equalizer: on/off, presets, preamp and ten bands. Bands apply on release.

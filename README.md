@@ -14,18 +14,20 @@ Prefer something cleaner? There's a built-in look too.
 
 ![herdr-player's built-in look](preview.png)
 
-## Spotify, no account needed
+## Spotify, with or without an account
 
 Open the Spotify tab and paste any song, album, playlist or artist link. You see the cover and the track list. Hit Play all, or click a song.
 
 It doesn't need the Spotify app or a login. herdr-player reads the track list from Spotify's public page, finds each song on YouTube, and plays it right in the player.
+
+Got Spotify Premium? Hit Connect in the Spotify tab and log in once. Now you can search Spotify, open your own playlists and liked songs, and hear Spotify's real audio, played by [spotify_player](https://github.com/aome510/spotify-player) behind the scenes. Premium support is brand new, so if it acts up, [open an issue](https://github.com/dogebonker/herdr-player/issues).
 
 ![Pasting a Daft Punk album into the Spotify tab and playing it](spotify.gif)
 
 ## What it does
 
 - **YouTube.** Search, paste a video, or paste a whole playlist.
-- **Spotify.** Paste a song, album, playlist or artist into the Spotify tab. No app or account.
+- **Spotify.** Paste any Spotify link, no account needed. Connect Premium for search, your playlists and Spotify's own audio.
 - **Your files.** Drop a folder, some songs or an `.m3u` on it.
 - **Skins.** Any classic `.wsz` skin, one click from the store.
 - **The good stuff.** A 10-band EQ with presets, balance, shuffle, repeat and a visualizer. It folds down to a single line when you only want the song title.
@@ -41,6 +43,8 @@ It needs mpv and yt-dlp:
 ```sh
 brew install mpv yt-dlp
 ```
+
+For Spotify Premium it also uses `spotify_player`. The Connect button installs it for you.
 
 ## Keys
 

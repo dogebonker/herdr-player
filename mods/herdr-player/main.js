@@ -9,7 +9,8 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, InputState } from "gpui-base";
-import { exec, hc, home, props, closeOverlay, notify, pickFolder, writeTextFile, nextCommand, openOverlay, shared } from "herdr";
+import { exec, hc, home, props, closeOverlay, notify, pickFolder, writeTextFile, nextCommand, openOverlay, shared, run } from "herdr";
+import { spotifyStatus, spotifyCli, startSpotify, stopSpotify, claimDevice, spotifySearch, spotifyPlaylists, spotifyLiked, spotifyItem, spotifyNow } from "./spotify.js";
 import { storeInit, storeRender } from "./store.js";
 import { classicMain } from "./classic.js";
 import { loadSkin, skinnedMain, skinnedEq } from "./skin.js";
@@ -60,10 +61,17 @@ export default class Player extends View {
     this.query = InputState.new({ placeholder: "Search YouTube, or paste a YouTube or Spotify link" });
     this.query.on("submit", (_e, cx) => this.submit(cx));
     // The Spotify tab's link box; the last link loads again when the player opens.
-    this.spQuery = InputState.new({ placeholder: "Paste a Spotify song, album, playlist or artist link" });
+    this.spQuery = InputState.new({ placeholder: "Spotify link, or search Spotify" });
     this.spQuery.on("submit", (_e, cx) => this.loadSpotify(cx));
     this.sp = null;
     this.spBusy = false;
+    // A Spotify account through spotify_player (spotify.js): installed, logged in, and whether Premium audio is up
+    // (null: not known yet). `engine` is what plays now: mpv, or Spotify itself.
+    this.spot = { installed: false, loggedIn: false, premium: null };
+    this.engine = "mpv";
+    this.spView = "card";
+    this.spFound = null;
+    this.spLists = [];
     this.dir = `${home()}/.config/herdr-app/mods/herdr-player`;
     this.ctl = `${this.dir}/mpvctl.py`;
     this.cache = `${home()}/Library/Caches/herdr-player`;
@@ -89,6 +97,9 @@ export default class Player extends View {
       this.spQuery.set_value(this.set.spLink);
       this.loadSpotify(cx);
     }
+    // Notices a login made in the terminal (Connect) while the Spotify tab shows.
+    this.checkSpotify(cx);
+    cx.timer.every(5000, (cx) => { if (this.set.tab === "sp" && !this.spot.loggedIn) this.checkSpotify(cx); });
     cx.spawn(async (cx) => {
       await this.scanSkins();
       if (this.set.skin) await this.useSkin(this.set.skin, cx);
@@ -195,6 +206,7 @@ export default class Player extends View {
   applyAudio() { return this.mpv([["af", "set", this.afGraph()]]); }
   audio(patch, cx) {
     this.save(patch, cx);
+    if (this.engine === "spotify" && (patch.eq || "balance" in patch)) this.message = "The EQ and balance shape YouTube and files; Spotify plays as it is.";
     this.act(cx, () => this.applyAudio());
   }
 
@@ -203,7 +215,13 @@ export default class Player extends View {
     this.polling = true;
     cx.spawn(async (cx) => {
       try {
-        await this.pollMpv();
+        if (this.engine === "spotify") {
+          const now = await spotifyNow();
+          this.state = now ? { ...now, volume: this.drag?.kind === "vol" ? this.state.volume : now.volume }
+            : { ...this.state, playing: false, paused: false, title: "", time: -1, length: -1, origin: null };
+          // SHUF and REP light from Spotify's own state while it plays (not saved).
+          if (now) Object.assign(this.set, { shuffle: now.shuffle, repeat: now.repeat !== "off" });
+        } else await this.pollMpv();
       } finally {
         this.polling = false;
         cx.notify();
@@ -254,6 +272,10 @@ export default class Player extends View {
 
   transport(what, cx) {
     this.act(cx, async () => {
+      if (this.engine === "spotify") {
+        const cmd = { play: "play", pause: "pause", toggle: "play-pause", next: "next", prev: "previous", stop: "pause" }[what];
+        return spotifyCli(["playback", cmd]);
+      }
       // Stopped with a queue, Play starts it again where it stood (after stop, no entry is current).
       if ((what === "play" || what === "toggle") && !this.state.playing && !this.state.paused && this.queue.length) {
         const cur = this.queue.findIndex((e) => e.current);
@@ -270,26 +292,32 @@ export default class Player extends View {
 
   seek(frac, cx) {
     if (!(this.state.length > 0)) return;
+    // spotify_player seeks by an offset from where it is (ms): taken before the display moves.
+    const offset = Math.round((frac * this.state.length - Math.max(0, this.state.time)) * 1000);
     this.state.time = frac * this.state.length;
-    this.act(cx, () => this.mpv([["seek", frac * 100, "absolute-percent"]]));
+    this.act(cx, () => this.engine === "spotify" ? spotifyCli(["playback", "seek", "--", String(offset)])
+      : this.mpv([["seek", frac * 100, "absolute-percent"]]));
   }
 
   volume(v, cx) {
     v = Math.max(0, Math.min(100, Math.round(v)));
     this.state.volume = v;
-    this.act(cx, () => this.mpv([["set_property", "volume", v]]));
+    this.act(cx, () => this.engine === "spotify" ? spotifyCli(["playback", "volume", String(v)]) : this.mpv([["set_property", "volume", v]]));
   }
 
   toggleShuffle(cx) {
     const on = !this.set.shuffle;
     this.save({ shuffle: on }, cx);
-    this.act(cx, () => this.mpv([[on ? "playlist-shuffle" : "playlist-unshuffle"], ["set_property", "shuffle", on]]));
+    this.act(cx, () => this.engine === "spotify" ? (Boolean(this.state.shuffle) !== on ? spotifyCli(["playback", "shuffle"]) : null)
+      : this.mpv([[on ? "playlist-shuffle" : "playlist-unshuffle"], ["set_property", "shuffle", on]]));
   }
 
   toggleRepeat(cx) {
     const on = !this.set.repeat;
     this.save({ repeat: on }, cx);
-    this.act(cx, () => this.mpv([["set_property", "loop-playlist", on ? "inf" : "no"]]));
+    // Spotify's own repeat cycles off → track → context → off, one step per click; its state shows from the poll.
+    this.act(cx, () => this.engine === "spotify" ? spotifyCli(["playback", "repeat"])
+      : this.mpv([["set_property", "loop-playlist", on ? "inf" : "no"]]));
   }
 
   eqPreset(name, cx) {
@@ -329,9 +357,17 @@ export default class Player extends View {
     }
   }
 
-  // Plays now (replace), after the queue (append-play), or only queues (append).
+  // mpv is what plays from here: Spotify's own playback pauses, so the two never play at once.
+  async toMpv() {
+    if (this.engine !== "spotify") return;
+    this.engine = "mpv";
+    await spotifyCli(["playback", "pause"]).catch(() => null);
+  }
+
+  // Plays now (replace), after the queue (append-play), or only queues (append). A newer replace (here or on
+  // Spotify) wins over one still downloading.
   async play(item, how) {
-    if (how === "replace") this.gen = (this.gen ?? 0) + 1;
+    const gen = how === "replace" ? (this.gen = (this.gen ?? 0) + 1) : this.gen;
     if (!(await this.ensureMpv())) return;
     const id = ytId(item.url);
     if (id) this.message = `Loading ${item.title}…`;
@@ -342,6 +378,8 @@ export default class Player extends View {
       this.origins[file] = item.origin ?? "yt";
       localStorage.setItem("origins", JSON.stringify(this.origins));
     }
+    if (how === "replace" && this.gen !== gen) return;
+    if (how !== "append") await this.toMpv();
     await this.mpv([["loadfile", file, how], ...(how === "append" ? [] : [["set_property", "pause", false]])]);
     this.message = "";
   }
@@ -358,6 +396,7 @@ export default class Player extends View {
     }
     if (!lists.length && !rest.length) return;
     if (!(await this.ensureMpv())) return;
+    await this.toMpv();
     const wasEmpty = !this.queue.length;
     for (const l of lists) await this.mpv([["loadlist", l, "append-play"]]);
     if (rest.length) {
@@ -400,7 +439,7 @@ export default class Player extends View {
     const cmd = { play: [["playlist-play-index", i], ["set_property", "pause", false]], remove: [["playlist-remove", i]],
       move: [["playlist-move", i, j > i ? j + 1 : j]], clear: [["playlist-clear"], ["stop"]] }[what];
     if (what === "clear") this.gen = (this.gen ?? 0) + 1;
-    this.act(cx, () => this.mpv(cmd));
+    this.act(cx, async () => { if (what === "play") await this.toMpv(); return this.mpv(cmd); });
   }
 
   // A Spotify link, read from Spotify's public embed page (no account): its name, who it's by, cover art (about
@@ -411,8 +450,9 @@ export default class Player extends View {
     const e = m && JSON.parse(m[1]).props?.pageProps?.state?.data?.entity;
     if (!e) throw new Error("Spotify didn't share that link (is it private?)");
     const artists = (e.artists ?? []).map((a) => a.name).join(", ");
-    const songs = kind === "track" ? [{ title: e.name ?? e.title, by: artists, ms: e.duration }]
-      : (e.trackList ?? []).filter((t) => t.title && t.isPlayable !== false).map((t) => ({ title: t.title, by: t.subtitle ?? "", ms: t.duration }));
+    const songs = kind === "track" ? [{ id, title: e.name ?? e.title, by: artists, ms: e.duration }]
+      : (e.trackList ?? []).filter((t) => t.title && t.isPlayable !== false)
+        .map((t) => ({ id: String(t.uri ?? "").split(":").pop(), title: t.title, by: t.subtitle ?? "", ms: t.duration }));
     const size = (i) => i.width ?? i.maxWidth ?? 300;
     const imgs = e.coverArt?.sources ?? e.visualIdentity?.image ?? [];
     const cover = [...imgs].filter((i) => size(i) <= 320).sort((a, b) => size(b) - size(a))[0] ?? imgs[0];
@@ -422,14 +462,19 @@ export default class Player extends View {
   // The Spotify tab: a link's cover, name and songs, shown before anything plays.
   loadSpotify(cx) {
     const text = this.spQuery.value().trim(), link = spotifyLink(text);
-    if (!link) { this.message = "That isn't a Spotify song, album, playlist or artist link."; cx.notify(); return; }
+    if (!text) return;
+    if (!link) return this.searchSpotify(text, cx);
     if (this.spBusy) return;
     this.spBusy = true;
     this.message = "Reading the Spotify link…";
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const sp = await this.spotifyLoad(link);
+        // The public page has the cover; a private playlist needs the account.
+        const sp = await this.spotifyLoad(link).catch((e) => {
+          if (this.spot.premium === true && link.kind !== "track") return spotifyItem(link.kind, link.id);
+          throw e;
+        });
         // The cover, cached in a hidden folder (no mod reload); only https, and the file named by kind and id.
         if (sp.cover?.startsWith("https://")) {
           const name = `${sp.kind}-${sp.id}.jpg`;
@@ -438,6 +483,7 @@ export default class Player extends View {
           if (r.code === 0) sp.coverPath = `mods/herdr-player/.spotify/${name}`;
         }
         this.sp = sp;
+        this.spView = "card";
         this.message = sp.songs.length ? "" : "No playable songs in that link.";
         this.save({ spLink: text });
       } catch (e) {
@@ -449,11 +495,34 @@ export default class Player extends View {
     });
   }
 
-  // Plays the loaded Spotify songs: all of them (i null), or one, found on YouTube.
-  playSpotify(i, how, cx) {
-    const songs = this.sp?.songs ?? [];
+  // Plays Spotify songs: all of the loaded ones (i null), or one. With Premium through Spotify itself (queueing
+  // isn't offered there); otherwise each found on YouTube. `list` is the songs to pick from (default: the card's).
+  playSpotify(i, how, cx, list) {
+    const songs = list ?? this.sp?.songs ?? [];
     if (!songs.length) return;
     const t = i == null ? null : songs[i];
+    if (this.spot.premium && how !== "append-play") {
+      const sp = list ? null : this.sp;
+      this.message = "Starting on Spotify…";
+      cx.notify();
+      const gen = (this.gen = (this.gen ?? 0) + 1);
+      return this.act(cx, async () => {
+        await claimDevice().catch(() => null);
+        if (t?.id) await spotifyCli(["playback", "start", "track", "--id", t.id]);
+        else if (sp?.kind === "liked") await spotifyCli(["playback", "start", "liked"]);
+        else if (sp && ["album", "playlist", "artist"].includes(sp.kind)) await spotifyCli(["playback", "start", "context", sp.kind, "--id", sp.id]);
+        else if (songs[0]?.id) await spotifyCli(["playback", "start", "track", "--id", songs[0].id]);
+        else throw new Error("Spotify gave no id to play");
+        // The running instance answers before it acts: wait until Spotify really plays, then hand over.
+        let now = null;
+        for (let k = 0; k < 8 && !now?.playing; k++) { await exec("sleep", ["0.5"]); now = await spotifyNow(); }
+        if (!now?.playing) throw new Error("Spotify didn't start playing.");
+        if (this.gen !== gen) return spotifyCli(["playback", "pause"]).catch(() => null);
+        await this.mpv([["set_property", "pause", true]]);
+        this.engine = "spotify";
+        this.message = "";
+      });
+    }
     this.message = t ? `Finding ${t.title} on YouTube…` : `Finding ${songs.length > 1 ? `${songs.length} songs` : "it"} on YouTube…`;
     cx.notify();
     this.act(cx, async () => {
@@ -461,6 +530,95 @@ export default class Player extends View {
       const m = await this.ytMatch(t);
       if (!m) throw new Error(`Couldn't find ${t.title} on YouTube`);
       await this.play(m, how);
+    });
+  }
+
+  // ---- a Spotify account (spotify.js) ----
+
+  // Logged in now? Then the hidden spotify_player starts, and its device says whether Premium audio works.
+  checkSpotify(cx) {
+    if (this.spotChecking) return;
+    this.spotChecking = true;
+    cx.spawn(async (cx) => {
+      try {
+        const was = this.spot.loggedIn;
+        Object.assign(this.spot, await spotifyStatus());
+        if (this.spot.loggedIn && (!was || this.spot.premium !== true)) {
+          this.spot.premium = null;
+          cx.notify();
+          this.spot.premium = await startSpotify().catch(() => false);
+        }
+        if (!this.spot.loggedIn) this.spot.premium = null;
+      } finally {
+        this.spotChecking = false;
+        cx.notify();
+      }
+    });
+  }
+
+  // Connect: installs spotify_player, or logs in by running it once in a terminal you can see (it opens Spotify's
+  // login page; only the full app saves the login). Retry: starts the hidden one again.
+  connectSpotify(cx) {
+    if (this.spot.loggedIn) return this.checkSpotify(cx);
+    run("terminal.open", { argv: this.spot.installed ? ["spotify_player"] : ["brew", "install", "spotify_player"] });
+    this.message = this.spot.installed ? "Log in in the browser, then quit spotify_player with q. The player notices."
+      : "Installing spotify_player; press Connect again when it's done.";
+    cx.notify();
+  }
+
+  searchSpotify(q, cx) {
+    if (this.spot.premium !== true) {
+      this.message = "Paste a Spotify link, or connect Spotify Premium to search Spotify.";
+      return cx.notify();
+    }
+    if (this.spBusy) return;
+    this.spBusy = true;
+    this.message = "Searching Spotify…";
+    cx.notify();
+    this.act(cx, async () => {
+      try {
+        this.spFound = await spotifySearch(q);
+        this.spView = "search";
+        this.message = this.spFound.songs.length || this.spFound.lists.length ? "" : "Nothing found on Spotify.";
+      } finally { this.spBusy = false; }
+    });
+  }
+
+  showSpotify(view, cx) {
+    if (this.spBusy || this.spot.premium !== true) return;
+    this.spBusy = true;
+    this.message = view === "playlists" ? "Getting your playlists…" : "Getting your liked songs…";
+    cx.notify();
+    this.act(cx, async () => {
+      try {
+        if (view === "playlists") { this.spLists = await spotifyPlaylists(); this.spView = "playlists"; }
+        else { this.sp = await spotifyLiked(); this.spView = "card"; }
+        this.message = "";
+      } finally { this.spBusy = false; }
+    });
+  }
+
+  // An album, playlist or artist from search or your playlists, as a card.
+  openSpotify(kind, id, cx) {
+    if (this.spBusy || this.spot.premium !== true) return;
+    this.spBusy = true;
+    this.message = "Opening…";
+    cx.notify();
+    this.act(cx, async () => {
+      try {
+        const sp = await spotifyItem(kind, id);
+        // The cover comes from the public page, when there is one.
+        const pub = await this.spotifyLoad({ kind, id }).catch(() => null);
+        if (pub?.cover?.startsWith("https://")) {
+          const name = `${kind}-${id}.jpg`;
+          const r = await exec("sh", ["-c", '[ -s "$2" ] || { mkdir -p "$(dirname "$2")" && curl -sfL -m 20 -o "$2" "$1"; }; [ -s "$2" ]',
+            "cover", pub.cover, `${this.dir}/.spotify/${name}`]).catch(() => ({ code: 1 }));
+          if (r.code === 0) sp.coverPath = `mods/herdr-player/.spotify/${name}`;
+        }
+        this.sp = sp;
+        this.spView = "card";
+        this.message = "";
+      } finally { this.spBusy = false; }
     });
   }
 
@@ -540,7 +698,7 @@ export default class Player extends View {
   // Closing the window ends the music: mpv quits with it.
   async close() {
     if (this.isStore) return;
-    await exec("python3", [this.ctl, this.sock, JSON.stringify([["quit"]])]).catch(() => null);
+    await Promise.all([exec("python3", [this.ctl, this.sock, JSON.stringify([["quit"]])]).catch(() => null), stopSpotify()]);
   }
 
   // ---- sliders ----
