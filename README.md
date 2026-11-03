@@ -2,14 +2,24 @@
 
 A tiny retro music player that lives inside [Herdr](https://herdr.dev). YouTube, Spotify and your own files, wearing real Winamp-era skins.
 
-![herdr-player](preview.png)
+![herdr-player wearing twelve different classic skins](preview.gif)
+
+## Your old Winamp skins work here
+
+Back in the Winamp days, people made skins for their music player and shared them as `.wsz` files. Tens of thousands of them. The [Winamp Skin Museum](https://skins.webamp.org) saved over 100,000.
+
+herdr-player wears them. Open the built-in store, search or hit Random, click one, done. Got an old `.wsz` lying around? Drop it on the player.
+
+Prefer something cleaner? There's a built-in look too.
+
+![herdr-player's built-in look](preview.png)
 
 ## What it does
 
 - **YouTube.** Search, paste a video, or paste a whole playlist.
 - **Spotify.** Paste a Spotify link and the Spotify app plays it.
 - **Your files.** Drop a folder, some songs or an `.m3u` on it.
-- **Skins.** Over 100,000 classic `.wsz` skins from the Winamp Skin Museum, one click each. Feeling lucky? Hit Random.
+- **Skins.** Any classic `.wsz` skin, one click from the store.
 - **The good stuff.** A 10-band EQ with presets, balance, shuffle, repeat and a visualizer. It folds down to a single line when you only want the song title.
 
 ## Install
