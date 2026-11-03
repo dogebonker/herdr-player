@@ -26,7 +26,6 @@ export const chip = (pal, id, label, fn, on) => div().id(id).h(18).px(5).flex_no
   .hover((s) => s.text_color(pal.current)).on_mouse_down("left", stop).on_click((_e, cx) => fn(cx)).child(label);
 
 export function playlistPanel(p, pal, width) {
-  const yt = p.set.source === "yt";
   // Press a queue row and let go on another to move it there; a click plays it.
   const row = (e, i, queued) => h_flex().id(`${queued ? "q" : "r"}-${i}`).h(20).px(4).gap(6).flex_none().items_center()
     .text_size(11).text_color(e.current ? pal.current : pal.text)
@@ -58,22 +57,17 @@ export function playlistPanel(p, pal, width) {
 
   return v_flex().id("pl").w(width).p(4).gap(4).bg(pal.face).border(1).border_color(pal.edge).font_family(pal.font)
     .child(h_flex().gap(4).items_center()
-      .child(chip(pal, "src-yt", "YouTube", (cx) => p.setSource("yt", cx), yt))
-      .child(chip(pal, "src-sp", "Spotify", (cx) => p.setSource("sp", cx), !yt))
-      .child(div().flex_1())
-      .when(yt, (el) => el
-        .child(chip(pal, "pl-add", "+Dir", (cx) => p.addFolder(cx)))
-        .child(chip(pal, "pl-save", "Save", (cx) => p.saveList(cx)))
-        .child(chip(pal, "pl-clear", "Clear", (cx) => p.queueAct("clear", 0, 0, cx)))))
+      .child(div().flex_1().text_size(9).text_color(pal.dim).opacity(0.7).child("YOUTUBE · SPOTIFY LINKS · FILES"))
+      .child(chip(pal, "pl-add", "+Dir", (cx) => p.addFolder(cx)))
+      .child(chip(pal, "pl-save", "Save", (cx) => p.saveList(cx)))
+      .child(chip(pal, "pl-clear", "Clear", (cx) => p.queueAct("clear", 0, 0, cx))))
     .child(h_flex().h(22).px(4).gap(4).items_center().bg(pal.bg).border(1).border_color(pal.edge).on_mouse_down("left", stop)
       .child(Input.new(p.query).flex_1().h_full().text_size(11).text_color(pal.text))
       .child(chip(pal, "go", p.busy ? "…" : "Go", (cx) => p.submit(cx))))
     .when(Boolean(p.message), (el) => el.child(div().text_size(10).text_color(pal.dim).child(p.message)))
-    .when(!yt, (el) => el.child(div().text_size(10).text_color(pal.dim).opacity(0.8)
-      .child("Paste a Spotify link to play it in the Spotify app, or type to search there.")))
-    .when(yt && p.results.length > 0, (el) => el.child(list("RESULTS · click plays, + queues", p.results, false)))
-    .when(yt, (el) => el.child(p.queue.length ? list("PLAYLIST · drag to reorder", p.queue, true)
-      : div().text_size(10).text_color(pal.dim).opacity(0.7).child("Empty. Search above, drop files or folders here, or add a folder.")));
+    .when(p.results.length > 0, (el) => el.child(list("RESULTS · click plays, + queues", p.results, false)))
+    .child(p.queue.length ? list("PLAYLIST · drag to reorder", p.queue, true)
+      : div().text_size(10).text_color(pal.dim).opacity(0.7).child("Empty. Search, paste a YouTube or Spotify link, or drop files here."));
 }
 
 // The built-in equalizer: on/off, presets, preamp and ten bands. Bands apply on release.
@@ -101,6 +95,5 @@ export function eqPanel(p, pal, width) {
     .child(h_flex().gap(2).items_end()
       .child(slider(-1, eq.preamp, "PRE"))
       .child(div().w(6))
-      .children(eq.bands.map((v, i) => slider(i, v, EQ_LABELS[i]))))
-    .when(p.set.source === "sp", (el) => el.child(div().text_size(9).text_color(pal.dim).child("The equalizer and balance shape YouTube and local files. Spotify has its own.")));
+      .children(eq.bands.map((v, i) => slider(i, v, EQ_LABELS[i]))));
 }

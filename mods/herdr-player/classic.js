@@ -1,4 +1,4 @@
-// The built-in look: a dark bevelled case with a green LCD (amber for Spotify). Everything the skinned
+// The built-in look: a dark bevelled case with a green LCD. Everything the skinned
 // window offers is here too: shuffle, repeat, EQ and playlist toggles, balance, elapsed/remaining, the
 // visualizer modes, shade, and the skin switch.
 
@@ -8,14 +8,14 @@ import { mmss, VIS_MODES } from "./panels.js";
 
 const C = {
   case: "#26262d", hi: "#4a4a57", lo: "#111115", face: "#33333c", faceHi: "#40404b",
-  lcd: "#070b08", on: "#45f585", dim: "#1d5c34", amber: "#ffb347", text: "#c9c9d3", mute: "#7d7d8c",
+  lcd: "#070b08", on: "#45f585", dim: "#1d5c34", text: "#c9c9d3", mute: "#7d7d8c",
 };
 const LCD = "JetBrains Mono";
 const BARS = 18;
 const stop = (_e, cx) => cx.stop_propagation();
 
 export function classicMain(p) {
-  const s = p.state, set = p.set, yt = set.source === "yt", glow = yt ? C.on : C.amber;
+  const s = p.state, set = p.set, glow = C.on;
   const key = (id, label, fn, on) => div().id(id).h(22).px(7).flex_none().flex().items_center().justify_center()
     .rounded(3).bg(on ? C.faceHi : C.face).border(1).border_color(on ? C.lo : C.hi).text_size(11).text_color(on ? glow : C.text)
     .hover((st) => st.bg(C.faceHi)).on_mouse_down("left", stop).on_click((_e, cx) => fn(cx)).child(label);
@@ -28,7 +28,7 @@ export function classicMain(p) {
   const seekFrac = dragging("seek") ?? (s.length > 0 ? s.time / s.length : 0);
   const shown = set.remaining && s.length > 0 && s.time >= 0 ? s.length - s.time : s.time;
   const clock = `${set.remaining && s.time >= 0 ? "-" : " "}${mmss(shown)}`;
-  const title = s.title || (yt ? "herdr-player · YouTube" : "herdr-player · Spotify");
+  const title = s.title || "herdr-player";
   const glyph = s.playing ? "▶" : s.paused ? "❚❚" : "■";
 
   const titlebar = h_flex().h(16).gap(6).items_center()
@@ -90,8 +90,9 @@ export function classicMain(p) {
         .child(div().text_color(s.channels === 1 ? glow : C.dim).child("MONO"))
         .child(div().text_color(s.channels >= 2 ? glow : C.dim).child("STEREO")))
       .child(h_flex().gap(8).text_size(10).text_color(C.dim)
-        .child(div().text_color(yt ? C.on : C.dim).child("YT"))
-        .child(div().text_color(yt ? C.dim : C.amber).child("SPOTIFY"))
+        .child(div().text_color(s.origin === "yt" ? glow : C.dim).child("YT"))
+        .child(div().text_color(s.origin === "sp" ? glow : C.dim).child("SPOTIFY"))
+        .child(div().text_color(s.origin === "file" ? glow : C.dim).child("FILE"))
         .child(div().flex_1())
         .child(div().text_color(set.shuffle ? glow : C.dim).child("SHUF"))
         .child(div().text_color(set.repeat ? glow : C.dim).child("REP"))

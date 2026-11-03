@@ -1,5 +1,6 @@
-// herdr-player: a small retro music window. YouTube plays through mpv; Spotify is the desktop app, driven by
-// AppleScript. The window is the remote: mpv runs in herdr-core as `herdr-player` and stops when the window closes.
+// herdr-player: a small retro music window. Everything plays through mpv: YouTube, Spotify links (each song found
+// on YouTube, no Spotify app or account), and local files. The window is the remote: mpv runs in herdr-core as
+// `herdr-player` and stops when the window closes.
 // YouTube refuses mpv's own stream request (403), so yt-dlp downloads each track to a cache first and mpv plays
 // the file: seek, pause and the queue all work. Local files and folders play the same way.
 //
@@ -22,22 +23,16 @@ const ytId = (url) => /(?:[?&]v=|youtu\.be\/|\/shorts\/)([\w-]{11})/.exec(url)?.
 const isYtList = (q) => /^https?:\/\//.test(q) && /[?&]list=|\/playlist/.test(q);
 const isYtVideo = (q) => /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//.test(q);
 const basename = (p) => p.split("/").pop().replace(/\.[^.]+$/, "");
-// open.spotify.com/playlist/ID?si=… → spotify:playlist:ID. Checked, since it goes into AppleScript: kind and id only.
-const spotifyUri = (q) => {
-  if (/^spotify:(track|album|playlist|artist|episode|show):[A-Za-z0-9]+$/.test(q)) return q;
-  const m = /open\.spotify\.com\/(?:intl-\w+\/)?(track|album|playlist|artist|episode|show)\/([A-Za-z0-9]+)/.exec(q);
-  return m ? `spotify:${m[1]}:${m[2]}` : null;
+// A Spotify link (open.spotify.com/…/track/ID, or spotify:track:ID): its kind and id, or null.
+const spotifyLink = (q) => {
+  const m = /^spotify:(track|album|playlist|artist):([A-Za-z0-9]+)$/.exec(q)
+    ?? /^https:\/\/open\.spotify\.com\/(?:intl-[\w-]+\/)?(?:embed\/)?(track|album|playlist|artist)\/([A-Za-z0-9]+)/.exec(q);
+  return m ? { kind: m[1], id: m[2] } : null;
 };
-
-async function osa(script) {
-  const r = await exec("osascript", ["-e", script]).catch(() => null);
-  return r && r.code === 0 ? r.stdout.trim() : null;
-}
-const spotify = (cmd) => osa(`if application "Spotify" is running then tell application "Spotify" to ${cmd}`);
 
 // Settings kept per window copy; anything missing takes its default.
 const DEFAULTS = {
-  source: "yt", skin: null, scale: 1, vis: "bars", remaining: false, shuffle: false, repeat: false,
+  skin: null, scale: 1, vis: "bars", remaining: false, shuffle: false, repeat: false,
   balance: 0, eq: { on: false, preamp: 0, bands: Array(10).fill(0), preset: "Flat" }, custom: null,
   eqOpen: false, plOpen: true, shade: false,
 };
@@ -53,6 +48,8 @@ export default class Player extends View {
     this.queue = [];
     this.results = [];
     this.titles = JSON.parse(localStorage.getItem("titles") ?? "{}");
+    // Where each queued file came from (yt, sp), for the display; anything else is a local file.
+    this.origins = JSON.parse(localStorage.getItem("origins") ?? "{}");
     this.message = "";
     this.busy = false;
     this.pressed = null;
@@ -60,7 +57,7 @@ export default class Player extends View {
     this.plDrag = null;
     this.skin = null;
     this.skins = [];
-    this.query = InputState.new({ placeholder: "Search YouTube, paste a link, a folder or an .m3u path" });
+    this.query = InputState.new({ placeholder: "Search YouTube, or paste a YouTube or Spotify link" });
     this.query.on("submit", (_e, cx) => this.submit(cx));
     this.dir = `${home()}/.config/herdr-app/mods/herdr-player`;
     this.ctl = `${this.dir}/mpvctl.py`;
@@ -75,7 +72,7 @@ export default class Player extends View {
     exec("find", [this.cache, "-type", "f", "-mtime", "+14", "-delete"]).catch(() => null);
     cx.timer.every(1000, (cx) => this.poll(cx));
     // The level meter reads mpv's levels a few times a second, only while it shows and plays.
-    cx.timer.every(150, (cx) => { if (this.set.vis === "meter" && this.state.playing && this.set.source === "yt" && !this.set.shade) this.pollLevels(cx); });
+    cx.timer.every(150, (cx) => { if (this.set.vis === "meter" && this.state.playing && !this.set.shade) this.pollLevels(cx); });
     // Keys from keys.json (`herdr-player.toggle`, `herdr-player.next`); they reach the player while its window is open.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -197,8 +194,7 @@ export default class Player extends View {
     this.polling = true;
     cx.spawn(async (cx) => {
       try {
-        if (this.set.source === "yt") await this.pollMpv();
-        else await this.pollSpotify();
+        await this.pollMpv();
       } finally {
         this.polling = false;
         cx.notify();
@@ -218,6 +214,7 @@ export default class Player extends View {
       playing: !idle && !pause, paused: !idle && Boolean(pause), title: idle ? "" : current?.title ?? title ?? "",
       time: time ?? -1, length: length ?? -1, volume: this.drag?.kind === "vol" ? this.state.volume : Math.round(volume ?? this.state.volume),
       kbps: bitrate ? Math.round(bitrate / 1000) : 0, khz: rate ? Math.round(rate / 1000) : 0, channels: channels ?? 0,
+      origin: idle || !current ? null : this.origins[current.url] ?? "file",
     };
   }
 
@@ -236,14 +233,6 @@ export default class Player extends View {
     });
   }
 
-  async pollSpotify() {
-    const out = await spotify(`return (player state as string) & "\n" & (name of current track) & " - " & (artist of current track) & "\n" & ((duration of current track) / 1000) & "\n" & (player position) & "\n" & (sound volume)`);
-    if (!out) { this.state = { ...this.state, playing: false, paused: false, title: "Spotify isn't running", time: -1, length: -1, kbps: 0, khz: 0, channels: 0 }; return; }
-    const [st, title, length, time, volume] = out.split("\n");
-    const num = (s) => parseFloat(String(s).replace(",", "."));
-    this.state = { playing: st === "playing", paused: st === "paused", title, time: num(time), length: num(length), volume: Math.round(num(volume)), kbps: 0, khz: 0, channels: 2 };
-  }
-
   // ---- actions ----
 
   act(cx, fn) {
@@ -256,10 +245,6 @@ export default class Player extends View {
 
   transport(what, cx) {
     this.act(cx, async () => {
-      if (this.set.source === "sp") {
-        if (what === "play" && !(await osa(`application "Spotify" is running`) === "true")) return exec("open", ["-a", "Spotify"]);
-        return spotify({ play: "play", pause: "pause", toggle: "playpause", next: "next track", prev: "previous track", stop: "pause" }[what]);
-      }
       // Stopped with a queue, Play starts it again where it stood (after stop, no entry is current).
       if ((what === "play" || what === "toggle") && !this.state.playing && !this.state.paused && this.queue.length) {
         const cur = this.queue.findIndex((e) => e.current);
@@ -277,34 +262,25 @@ export default class Player extends View {
   seek(frac, cx) {
     if (!(this.state.length > 0)) return;
     this.state.time = frac * this.state.length;
-    this.act(cx, () => this.set.source === "sp"
-      ? spotify(`set player position to ${(frac * this.state.length).toFixed(1)}`)
-      : this.mpv([["seek", frac * 100, "absolute-percent"]]));
+    this.act(cx, () => this.mpv([["seek", frac * 100, "absolute-percent"]]));
   }
 
   volume(v, cx) {
     v = Math.max(0, Math.min(100, Math.round(v)));
     this.state.volume = v;
-    this.act(cx, () => this.set.source === "sp" ? spotify(`set sound volume to ${v}`) : this.mpv([["set_property", "volume", v]]));
+    this.act(cx, () => this.mpv([["set_property", "volume", v]]));
   }
 
   toggleShuffle(cx) {
     const on = !this.set.shuffle;
     this.save({ shuffle: on }, cx);
-    this.act(cx, () => this.set.source === "sp" ? spotify(`set shuffling to ${on}`)
-      : this.mpv([[on ? "playlist-shuffle" : "playlist-unshuffle"], ["set_property", "shuffle", on]]));
+    this.act(cx, () => this.mpv([[on ? "playlist-shuffle" : "playlist-unshuffle"], ["set_property", "shuffle", on]]));
   }
 
   toggleRepeat(cx) {
     const on = !this.set.repeat;
     this.save({ repeat: on }, cx);
-    this.act(cx, () => this.set.source === "sp" ? spotify(`set repeating to ${on}`) : this.mpv([["set_property", "loop-playlist", on ? "inf" : "no"]]));
-  }
-
-  setSource(src, cx) {
-    this.save({ source: src }, cx);
-    this.query.set_placeholder?.(src === "yt" ? "Search YouTube, paste a link, a folder or an .m3u path" : "Search Spotify, or paste a Spotify link");
-    this.poll(cx);
+    this.act(cx, () => this.mpv([["set_property", "loop-playlist", on ? "inf" : "no"]]));
   }
 
   eqPreset(name, cx) {
@@ -344,7 +320,7 @@ export default class Player extends View {
     }
   }
 
-  // Plays now (replace), after the queue (append-play), or only queues (append). Spotify pauses: one plays at a time.
+  // Plays now (replace), after the queue (append-play), or only queues (append).
   async play(item, how) {
     if (how === "replace") this.gen = (this.gen ?? 0) + 1;
     if (!(await this.ensureMpv())) return;
@@ -353,7 +329,10 @@ export default class Player extends View {
     const file = id ? await this.fetchAudio(id) : item.url;
     this.titles[file] = item.title;
     localStorage.setItem("titles", JSON.stringify(this.titles));
-    if (how !== "append") await spotify("pause");
+    if (id) {
+      this.origins[file] = item.origin ?? "yt";
+      localStorage.setItem("origins", JSON.stringify(this.origins));
+    }
     await this.mpv([["loadfile", file, how], ...(how === "append" ? [] : [["set_property", "pause", false]])]);
     this.message = "";
   }
@@ -370,7 +349,6 @@ export default class Player extends View {
     }
     if (!lists.length && !rest.length) return;
     if (!(await this.ensureMpv())) return;
-    if (this.set.source !== "yt") this.setSource("yt", cx);
     const wasEmpty = !this.queue.length;
     for (const l of lists) await this.mpv([["loadlist", l, "append-play"]]);
     if (rest.length) {
@@ -416,24 +394,61 @@ export default class Player extends View {
     this.act(cx, () => this.mpv(cmd));
   }
 
-  // YouTube: a playlist link queues it all, a video link plays it, a local path adds it, anything else searches.
-  // Spotify: a link or URI plays in the app, anything else opens the app's search.
+  // A Spotify link's songs, read from Spotify's public embed page (no account): title, artists, length in ms.
+  async spotifyTracks({ kind, id }) {
+    const r = await fetch(`https://open.spotify.com/embed/${kind}/${id}`, { headers: { "User-Agent": "Mozilla/5.0" } });
+    const m = /<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/.exec(await r.text());
+    const e = m && JSON.parse(m[1]).props?.pageProps?.state?.data?.entity;
+    if (!e) throw new Error("Spotify didn't share that link (is it private?)");
+    if (kind === "track") return [{ title: e.name ?? e.title, by: (e.artists ?? []).map((a) => a.name).join(", "), ms: e.duration }];
+    return (e.trackList ?? []).filter((t) => t.title && t.isPlayable !== false).map((t) => ({ title: t.title, by: t.subtitle ?? "", ms: t.duration }));
+  }
+
+  // The same song on YouTube: the first of five results within 15 s of Spotify's length, else the first.
+  async ytMatch(t) {
+    const r = await exec("yt-dlp", ["--flat-playlist", "-J", "--no-warnings", `ytsearch5:${t.by} - ${t.title} audio`]);
+    if (r.code !== 0) return null;
+    const hits = (JSON.parse(r.stdout).entries ?? []).filter((e) => e.id);
+    const want = (t.ms ?? 0) / 1000;
+    const best = hits.find((e) => want > 0 && e.duration && Math.abs(e.duration - want) <= 15) ?? hits[0];
+    return best ? { url: ytUrl(best.id), title: t.by ? `${t.by} - ${t.title}` : t.title, length: best.duration ?? -1, origin: "sp" } : null;
+  }
+
+  // Plays the first item at once; the rest resolve and queue one by one behind it, until something replaces or
+  // clears the queue. `resolve` turns an item into something playable (or null to skip it).
+  async playAll(items, resolve, cx) {
+    let i = 0, first = null;
+    while (i < items.length && !first) first = await resolve(items[i++]);
+    if (!first) throw new Error("Couldn't find those songs on YouTube");
+    await this.play(first, "replace");
+    const gen = this.gen, total = items.length, rest = items.slice(i);
+    cx.spawn(async (cx) => {
+      for (const [k, item] of rest.entries()) {
+        if (this.gen !== gen) return;
+        try { const x = await resolve(item); if (x && this.gen === gen) await this.play(x, "append"); } catch {}
+        this.message = k + 1 < rest.length ? `Queued ${total - rest.length + k + 1}/${total}` : "";
+        cx.notify();
+      }
+    });
+  }
+
+  // One box for everything: a Spotify link (its songs, found on YouTube), a YouTube playlist or video link, a local
+  // path, or else a YouTube search.
   submit(cx) {
     const q = this.query.value().trim();
     if (!q || this.busy) return;
-    const local = q.startsWith("/") || q.startsWith("~/");
+    const local = q.startsWith("/") || q.startsWith("~/"), sp = spotifyLink(q);
     this.busy = true;
-    this.message = this.set.source === "yt" && !local ? (isYtList(q) ? "Loading playlist…" : isYtVideo(q) ? "Loading…" : "Searching…") : "";
+    this.message = local ? "" : sp ? "Reading the Spotify link…" : isYtList(q) ? "Loading playlist…" : isYtVideo(q) ? "Loading…" : "Searching…";
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        if (this.set.source === "sp") {
-          const uri = spotifyUri(q);
-          if (!(await osa(`application "Spotify" is running`) === "true")) await exec("open", ["-a", "Spotify"]);
-          await this.mpv([["set_property", "pause", true]]);
-          if (uri) await osa(`tell application "Spotify" to play track "${uri}"`);
-          else await exec("open", [`spotify:search:${encodeURIComponent(q)}`]);
-          this.message = uri ? "" : "Search opened in Spotify";
+        if (sp) {
+          const tracks = await this.spotifyTracks(sp);
+          if (!tracks.length) throw new Error("No playable songs in that link");
+          this.message = `Finding ${tracks.length > 1 ? `${tracks.length} songs` : "it"} on YouTube…`;
+          cx.notify();
+          await this.playAll(tracks, (t) => this.ytMatch(t), cx);
         } else if (local) {
           await this.addLocal([q.replace(/^~/, home())], cx);
         } else if (isYtVideo(q) && !isYtList(q)) {
@@ -444,18 +459,7 @@ export default class Player extends View {
           const entries = (JSON.parse(r.stdout).entries ?? []).filter((e) => e.id)
             .map((e) => ({ url: ytUrl(e.id), title: e.title ?? e.id, length: e.duration ?? -1, by: e.channel ?? e.uploader ?? "" }));
           if (isYtList(q) && entries.length) {
-            // The first plays as soon as it's down; the rest download one by one behind it, until something
-            // replaces or clears the queue.
-            await this.play(entries[0], "replace");
-            const gen = this.gen;
-            cx.spawn(async (cx) => {
-              for (const [i, e] of entries.slice(1).entries()) {
-                if (this.gen !== gen) return;
-                try { await this.play(e, "append"); } catch {}
-                this.message = i + 2 < entries.length ? `Queued ${i + 2}/${entries.length}` : "";
-                cx.notify();
-              }
-            });
+            await this.playAll(entries, async (e) => e, cx);
           } else {
             this.results = entries;
             this.message = entries.length ? "" : "Nothing found";

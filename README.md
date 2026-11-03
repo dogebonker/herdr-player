@@ -1,6 +1,6 @@
 # herdr-player
 
-A tiny retro music player that lives inside [Herdr](https://herdr.dev). YouTube, Spotify and your own files, wearing real Winamp-era skins.
+A tiny retro music player that lives inside [Herdr](https://herdr.dev). YouTube, Spotify links and your own files, wearing real Winamp-era skins.
 
 ![herdr-player wearing twelve different classic skins](preview.gif)
 
@@ -17,7 +17,7 @@ Prefer something cleaner? There's a built-in look too.
 ## What it does
 
 - **YouTube.** Search, paste a video, or paste a whole playlist.
-- **Spotify.** Paste a Spotify link and the Spotify app plays it.
+- **Spotify links.** Paste a song, album, playlist or artist. It finds each song on YouTube and plays it. No Spotify app or account needed.
 - **Your files.** Drop a folder, some songs or an `.m3u` on it.
 - **Skins.** Any classic `.wsz` skin, one click from the store.
 - **The good stuff.** A 10-band EQ with presets, balance, shuffle, repeat and a visualizer. It folds down to a single line when you only want the song title.
@@ -33,8 +33,6 @@ It needs mpv and yt-dlp:
 ```sh
 brew install mpv yt-dlp
 ```
-
-Spotify is optional.
 
 ## Keys
 
