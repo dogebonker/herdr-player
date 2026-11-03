@@ -31,7 +31,7 @@ A Herdr window (`kind: "window"`, `frame: "none"`, key `herdr-player`, kept acro
 - `mods/herdr-player/mod.json`: `place: "none"`, overlay `{ kind: "window", key: "herdr-player", keep: true, frame: "none" }` (no width: the window fits its content).
 - `main.js`: the `Player` view. State, settings in `localStorage`, polling (1 s, 150 ms for the meter), actions, sliders. Opened with props `{ store: true }`, the same mod is the store (`store.js`).
 - `classic.js` (built-in main window), `skin.js` (skinned main window and equalizer, the `text.bmp` font map), `panels.js` (playlist, built-in equalizer, presets).
-- `mpvctl.py`: sends mpv JSON-IPC commands on `/tmp/herdr-player.sock` and prints the replies by `request_id`.
+- `mpvctl.py`: sends mpv JSON-IPC commands on `~/Library/Caches/herdr-player/mpv.sock` (a folder only you can open: mpv's socket accepts `run`) and prints the replies by `request_id`.
 - `skin.py`: unzips a `.wsz` (names matched case-insensitively), converts each sheet to nearest-neighbour PNGs at 2× and 4× with ffmpeg, writes a 3×16 visualizer gradient and `manifest.json` (sheet sizes, `viscolor.txt`, `pledit.txt`).
 - Programs: `mpv` (started with `hc run --bg --name herdr-player`), `yt-dlp` (search, playlists, downloads into `~/Library/Caches/herdr-player`, run through `hc run --bg`), `osascript` (Spotify), `ffmpeg`/`ffprobe`, `curl` (store), `python3`, `find`.
 - Network: `api.webamp.org/graphql` and `r2.webampskins.org` (store), YouTube (yt-dlp).

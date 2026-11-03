@@ -14,8 +14,6 @@ import { classicMain } from "./classic.js";
 import { loadSkin, skinnedMain, skinnedEq } from "./skin.js";
 import { playlistPanel, eqPanel, EQ_PRESETS } from "./panels.js";
 
-// ponytail: one fixed socket, so one player per user; a per-window socket if two are ever wanted.
-const SOCK = "/tmp/herdr-player.sock";
 const EQ_FREQS = [60, 170, 310, 600, 1000, 3000, 6000, 12000, 14000, 16000];
 const AUDIO = ["mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "aiff", "webm", "wma"];
 
@@ -67,6 +65,9 @@ export default class Player extends View {
     this.dir = `${home()}/.config/herdr-app/mods/herdr-player`;
     this.ctl = `${this.dir}/mpvctl.py`;
     this.cache = `${home()}/Library/Caches/herdr-player`;
+    // mpv's socket accepts `run`, so it lives in a folder only you can open, not in the shared /tmp.
+    // ponytail: one socket per user, so one player; a per-window socket if two are ever wanted.
+    this.sock = `${this.cache}/mpv.sock`;
     if (this.isStore) return storeInit(this, cx);
     // A skin request from the store (shared state); one already there when the window opens is old news.
     this.applied = shared("herdr-player.skin")?.at ?? 0;
@@ -147,7 +148,7 @@ export default class Player extends View {
   // ---- mpv ----
 
   async mpv(cmds) {
-    const r = await exec("python3", [this.ctl, SOCK, JSON.stringify(cmds)]).catch(() => null);
+    const r = await exec("python3", [this.ctl, this.sock, JSON.stringify(cmds)]).catch(() => null);
     if (!r || r.code !== 0) return null;
     try { return JSON.parse(r.stdout); } catch { return null; }
   }
@@ -158,8 +159,9 @@ export default class Player extends View {
   }
   async startMpv() {
     if (await this.mpv([["get_property", "idle-active"]])) return true;
+    await exec("sh", ["-c", 'mkdir -p "$1" && chmod 700 "$1" && rm -f "$2"', "prep", this.cache, this.sock]).catch(() => null);
     await hc(["run", "--bg", "--no-parent", "--no-notify", "--rm", "--name", "herdr-player", "--label", "herdr-player=1", "--",
-      "mpv", "--idle=yes", "--no-video", "--no-terminal", "--force-window=no", `--input-ipc-server=${SOCK}`,
+      "mpv", "--idle=yes", "--no-video", "--no-terminal", "--force-window=no", `--input-ipc-server=${this.sock}`,
       `--volume=${this.state.volume}`]).catch(() => null);
     for (let i = 0; i < 20; i++) {
       if (await this.mpv([["get_property", "idle-active"]])) {
@@ -474,7 +476,7 @@ export default class Player extends View {
   // Closing the window ends the music: mpv quits with it.
   async close() {
     if (this.isStore) return;
-    await exec("python3", [this.ctl, SOCK, JSON.stringify([["quit"]])]).catch(() => null);
+    await exec("python3", [this.ctl, this.sock, JSON.stringify([["quit"]])]).catch(() => null);
   }
 
   // ---- sliders ----
